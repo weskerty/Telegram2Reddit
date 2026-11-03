@@ -13,6 +13,9 @@
     "tasks": {
       "poll-telegram": {
         "endpoint": "/internal/scheduler/poll-telegram"
+      },
+      "verify-post": {
+        "endpoint": "/internal/scheduler/verify-post"
       }
     }
   },

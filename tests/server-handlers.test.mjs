@@ -13,6 +13,7 @@ const harness = vi.hoisted(() => ({
   /** @type {Map<string, string>} */
   redisStore: new Map(),
   submitPost: vi.fn(),
+  getPostById: vi.fn(),
   approve: vi.fn(),
   upload: vi.fn(),
   runJob: vi.fn(),
@@ -37,6 +38,7 @@ vi.mock("@devvit/redis", () => ({
 vi.mock("@devvit/reddit", () => ({
   reddit: {
     submitPost: harness.submitPost,
+    getPostById: harness.getPostById,
   },
 }));
 
@@ -52,7 +54,9 @@ vi.mock("@devvit/scheduler", () => ({
   },
 }));
 
-const { runPollJob, schedulePollingJob, JOB_NAME } = await import("../src/server/handlers.mjs");
+const { runPollJob, schedulePollingJob, verifyPost, serverOnRequest, JOB_NAME, VERIFY_JOB_NAME } = await import(
+  "../src/server/handlers.mjs"
+);
 
 /**
  * @param {number} updateId
@@ -99,7 +103,12 @@ beforeEach(() => {
   harness.approve.mockReset();
   harness.approve.mockResolvedValue(undefined);
   harness.submitPost.mockReset();
-  harness.submitPost.mockResolvedValue({ id: "t3_test", approve: harness.approve });
+  harness.submitPost.mockResolvedValue({
+    id: "t3_test",
+    permalink: "/r/ParaguayActividades/comments/test/x/",
+    approve: harness.approve,
+  });
+  harness.getPostById.mockReset();
   harness.upload.mockReset();
   harness.upload.mockResolvedValue({ mediaId: "media-1", mediaUrl: "https://i.redd.it/media-1.jpg" });
   harness.runJob.mockReset();
@@ -270,4 +279,67 @@ test("schedulePollingJob registers a recurring cron plus a warm-up run", async (
   expect(cronJob).toEqual({ name: JOB_NAME, cron: "*/15 * * * *" });
   expect(warmupJob.name).toBe(JOB_NAME);
   expect(warmupJob.runAt).toBeInstanceOf(Date);
+});
+
+test("runPollJob logs the post link and schedules a verify check", async () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  mockTelegram([channelPost(10, { text: "Feria" })]);
+
+  await runPollJob();
+
+  const logged = logSpy.mock.calls.flat().join("\n");
+  expect(logged).toContain("id=t3_test url=https://www.reddit.com/r/ParaguayActividades/comments/test/x/");
+  const verifyJob = harness.runJob.mock.calls.map((call) => call[0]).find((job) => job.name === VERIFY_JOB_NAME);
+  expect(verifyJob.data).toEqual({ postId: "t3_test" });
+  expect(verifyJob.runAt.getTime()).toBeGreaterThan(Date.now());
+});
+
+/**
+ * @param {Record<string, unknown>} fields
+ */
+function fakePost(fields) {
+  return { permalink: "/r/ParaguayActividades/comments/test/x/", approve: harness.approve, ...fields };
+}
+
+test("verifyPost re-approves a post the spam filter removed when autoApprove is on", async () => {
+  harness.settingsValues.autoApprove = true;
+  harness.getPostById.mockResolvedValue(fakePost({ approved: false, removed: false, spam: true, removedByCategory: "reddit" }));
+  vi.spyOn(console, "log").mockImplementation(() => {});
+
+  await verifyPost("t3_test");
+
+  expect(harness.getPostById).toHaveBeenCalledWith("t3_test");
+  expect(harness.approve).toHaveBeenCalledTimes(1);
+});
+
+test("verifyPost only logs when autoApprove is off, the post is live, or it was deleted", async () => {
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+  harness.getPostById.mockResolvedValue(fakePost({ removed: true, spam: true, removedByCategory: "reddit" }));
+  await verifyPost("t3_test");
+
+  harness.settingsValues.autoApprove = true;
+  harness.getPostById.mockResolvedValue(fakePost({ approved: true, removed: false, spam: false }));
+  await verifyPost("t3_test");
+
+  harness.getPostById.mockResolvedValue(fakePost({ removed: true, removedByCategory: "deleted" }));
+  await verifyPost("t3_test");
+
+  expect(harness.approve).not.toHaveBeenCalled();
+  expect(logSpy.mock.calls.flat().join("\n")).toContain("removed=true spam=true removedByCategory=reddit");
+});
+
+test("serverOnRequest routes the verify-post task with its data", async () => {
+  harness.getPostById.mockResolvedValue(fakePost({ approved: true, removed: false, spam: false }));
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  const { Readable } = await import("node:stream");
+  const req = Object.assign(Readable.from([JSON.stringify({ name: VERIFY_JOB_NAME, data: { postId: "t3_abc" } })]), {
+    url: "/internal/scheduler/verify-post",
+  });
+  const rsp = { writeHead: vi.fn(), end: vi.fn() };
+
+  await serverOnRequest(req, rsp);
+
+  expect(harness.getPostById).toHaveBeenCalledWith("t3_abc");
+  expect(rsp.writeHead.mock.calls[0][0]).toBe(200);
 });

@@ -28,6 +28,13 @@ import {
  */
 export const JOB_NAME = "poll-telegram";
 
+/**
+ * One-off task (`scheduler.tasks.verify-post`) that re-checks a submitted post
+ * after Reddit's spam filter has had time to act on it.
+ */
+export const VERIFY_JOB_NAME = "verify-post";
+const VERIFY_DELAY_MS = 60_000;
+
 const DEFAULT_MAX_POSTS_PER_RUN = 1;
 
 /**
@@ -80,17 +87,16 @@ export async function runPollJob() {
       ? await reddit.submitPost({ ...common, richtext: buildRichtextBody(uploaded, rendered.bodyText) })
       : await reddit.submitPost({ ...common, text: rendered.bodyText || " " });
 
-    if (autoApprove) {
-      try {
-        await submitted.approve();
-      } catch (err) {
-        console.error(`[${JOB_NAME}] approve failed: ${errorMessage(err)}`);
-      }
-    }
-
     state = markSeen(state, post.key, post.lastUpdateId + 1);
     await redis.set(stateKey, JSON.stringify(state));
-    console.log(`[${JOB_NAME}] Posted ${post.key}`);
+    console.log(
+      `[${JOB_NAME}] Posted ${post.key} id=${submitted.id} url=https://www.reddit.com${submitted.permalink ?? ""} autoApprove=${autoApprove}`
+    );
+
+    if (autoApprove) {
+      await approvePost(submitted.id, () => submitted.approve());
+    }
+    await scheduleVerify(submitted.id);
   }
 
   // Acknowledge everything up to the first post still waiting (or the whole
@@ -101,6 +107,55 @@ export async function runPollJob() {
   if (offset > state.offset) {
     state = { ...state, offset };
     await redis.set(stateKey, JSON.stringify(state));
+  }
+}
+
+/**
+ * Log the post's moderation state once Reddit's spam filter has run, and
+ * re-approve it if `autoApprove` is on and the filter removed it after the
+ * approval made at submit time.
+ *
+ * @param {string} postId
+ */
+export async function verifyPost(postId) {
+  const post = await reddit.getPostById(/** @type {`t3_${string}`} */ (postId));
+  const autoApprove = (await settings.get("autoApprove")) === true;
+  console.log(
+    `[${VERIFY_JOB_NAME}] ${postId} url=https://www.reddit.com${post.permalink} approved=${post.approved} removed=${post.removed} spam=${post.spam} removedByCategory=${post.removedByCategory ?? "-"} removedBy=${post.removedBy ?? "-"}`
+  );
+
+  // "deleted"/"author" means the post is gone on purpose; never resurrect it.
+  const deliberate = post.removedByCategory === "deleted" || post.removedByCategory === "author";
+  if (autoApprove && (post.removed || post.spam) && !deliberate) {
+    await approvePost(postId, () => post.approve());
+  }
+}
+
+/**
+ * @param {string} postId
+ * @param {() => Promise<void>} approve
+ */
+async function approvePost(postId, approve) {
+  try {
+    await approve();
+    console.log(`[${JOB_NAME}] approved ${postId}`);
+  } catch (err) {
+    console.error(`[${JOB_NAME}] approve failed for ${postId}: ${errorMessage(err)}`);
+  }
+}
+
+/**
+ * @param {string} postId
+ */
+async function scheduleVerify(postId) {
+  try {
+    await scheduler.runJob({
+      name: VERIFY_JOB_NAME,
+      runAt: new Date(Date.now() + VERIFY_DELAY_MS),
+      data: { postId },
+    });
+  } catch (err) {
+    console.error(`[${VERIFY_JOB_NAME}] could not schedule check for ${postId}: ${errorMessage(err)}`);
   }
 }
 
@@ -227,6 +282,14 @@ async function routeRequest(req, rsp) {
     case "/internal/scheduler/poll-telegram":
       await runPollJob();
       return writeJson(rsp, 200, { status: "ok" });
+    case "/internal/scheduler/verify-post": {
+      /** @type {{ name?: string; data?: { postId?: string } }} */
+      const task = JSON.parse((await readBody(req)) || "{}");
+      if (task.data?.postId) {
+        await verifyPost(task.data.postId);
+      }
+      return writeJson(rsp, 200, { status: "ok" });
+    }
     case "/internal/on-app-install":
     case "/internal/on-app-upgrade":
       await schedulePollingJob();
@@ -234,6 +297,18 @@ async function routeRequest(req, rsp) {
     default:
       return writeJson(rsp, 404, { status: "error", message: `not found: ${path}` });
   }
+}
+
+/**
+ * @param {import("node:http").IncomingMessage} req
+ * @returns {Promise<string>}
+ */
+async function readBody(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /**

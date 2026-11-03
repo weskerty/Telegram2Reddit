@@ -24,6 +24,7 @@ The app `telegram2post` is owned by the Reddit account `dadnothere`. `npx devvit
 1. Updates from other chats are ignored. Album items (same `media_group_id`) are merged into one post.
 1. Up to `maxPostsPerRun` posts are submitted. After each one, Redis key `tg:state:<subreddit>` stores `{ offset, seen }`. `seen` holds the last 500 post keys, so a crash between submitting and saving cannot cause a duplicate.
 1. The offset then moves past everything handled, which tells Telegram to drop those updates. Posts over the limit stay unacknowledged and are picked up by the next run.
+1. Each submitted post is logged with its id and URL. If `autoApprove` is on, it is approved right away. A one-off `verify-post` task then runs 60 s later and logs the post's moderation state (`approved`, `removed`, `spam`, `removedByCategory`). If Reddit's spam filter removed the post after that first approval, the task approves it again.
 
 Media is fetched with `getFile`. Its download URL contains the bot token, and that URL is passed to `media.upload`, which downloads the file on Reddit's side. The token is redacted from every error and log line.
 
