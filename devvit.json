@@ -1,6 +1,6 @@
 {
   "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
-  "name": "rss-post-bot",
+  "name": "telegram2post",
   "server": {
     "dir": "dist/server",
     "entry": "index.cjs"
@@ -11,16 +11,21 @@
   },
   "scheduler": {
     "tasks": {
-      "poll-rss-feed": {
-        "endpoint": "/internal/scheduler/poll-rss-feed"
+      "poll-telegram": {
+        "endpoint": "/internal/scheduler/poll-telegram"
       }
     }
   },
   "settings": {
     "subreddit": {
-      "feedUrl": {
+      "telegramBotToken": {
         "type": "string",
-        "label": "Feed URL"
+        "label": "Telegram bot token (from @BotFather)",
+        "helpText": "Visible to this subreddit's moderators only. Use a bot dedicated to this subreddit: one bot per installation."
+      },
+      "telegramChannel": {
+        "type": "string",
+        "label": "Telegram channel: numeric id (-100...) or @username"
       },
       "targetSubreddit": {
         "type": "string",
@@ -28,27 +33,35 @@
       },
       "pollMinutes": {
         "type": "number",
-        "label": "Poll interval (minutes)"
+        "label": "Poll interval (minutes, 1-60)",
+        "defaultValue": 15
       },
       "maxPostsPerRun": {
         "type": "number",
-        "label": "Max posts per run"
-      },
-      "maxDedupeTrack": {
-        "type": "number",
-        "label": "Remember this many post fingerprints"
-      },
-      "postKind": {
-        "type": "string",
-        "label": "Post kind: self or link"
+        "label": "Max posts per run",
+        "defaultValue": 1
       },
       "titlePrefix": {
         "type": "string",
-        "label": "Explicit title prefix"
+        "label": "Title prefix (optional)"
       },
-      "maxBodyChars": {
-        "type": "number",
-        "label": "Maximum body length for self-post"
+      "includeMedia": {
+        "type": "boolean",
+        "label": "Embed the post's photo or video",
+        "defaultValue": true
+      },
+      "flairId": {
+        "type": "string",
+        "label": "Post flair ID (optional)"
+      },
+      "flairText": {
+        "type": "string",
+        "label": "Post flair text override (optional)"
+      },
+      "autoApprove": {
+        "type": "boolean",
+        "label": "Auto-approve posts made by the app",
+        "defaultValue": false
       }
     }
   },
@@ -56,19 +69,10 @@
     "http": {
       "enable": true,
       "domains": [
-        "feeds.acast.com",
-        "feeds.megaphone.fm",
-        "feeds.npr.org",
-        "feeds.simplecast.com",
-        "mondoweiss.net",
-        "rss.buzzsprout.com",
-        "thecleanpaper.com",
-        "www.omnycontent.com",
-        "www.relay.fm",
-        "www.swr.de",
-        "www.theguardian.com"
+        "api.telegram.org"
       ]
     },
+    "media": true,
     "redis": true,
     "reddit": true
   },
@@ -77,6 +81,6 @@
     "build": "node tools/build.mjs"
   },
   "dev": {
-    "subreddit": "hardforkrssbot_dev"
+    "subreddit": "ParaguayActividades"
   }
 }

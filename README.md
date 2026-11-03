@@ -1,75 +1,51 @@
-# RSS Post Bot
+# Telegram2Post
 
-RSS Post Bot polls one RSS/Atom feed on a schedule and publishes new entries to Reddit.
+Telegram2Post reposts the posts of one Telegram channel to a subreddit: the text, the
+links, and the photo or video.
 
-It keeps a checkpoint and dedupe history so feed reorder/edits do not repost old content.
-
-## What moderators can use it for
-
-- Auto-post your podcast/news/blog feed into a subreddit.
-- Post as link posts or self posts.
-- Control cadence and safety limits per installation.
+It reads the channel through the official Telegram Bot API, and it remembers what it has
+already posted, so nothing is posted twice.
 
 ## Setup (moderators)
 
-1. Install the app.
-1. Open installation settings.
-1. Configure:
-   - `feedUrl`: RSS/Atom URL to poll.
-   - `targetSubreddit`: destination subreddit (or `u_<username>` for profile posts).
-   - `pollMinutes`: polling interval in minutes (`60` = hourly).
-   - `maxPostsPerRun`: max entries posted in one run (`1` recommended to start).
-   - `maxDedupeTrack`: number of recent fingerprints remembered to avoid duplicates.
-   - `postKind`: `self` or `link`.
-   - `titlePrefix`: text prefixed to each post title.
-   - `maxBodyChars`: max self-post body length before clipping.
-1. Save settings and wait for the first scheduled run.
+1. In Telegram, create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy its token.
+1. Add that bot to the channel as an **administrator**. It only needs to read posts.
+1. Install the app on the subreddit and open its installation settings:
+   - `telegramBotToken`: the token from BotFather. Use **one bot per installation**: Telegram delivers each update only once, so two installations sharing a bot would split the posts between them. Only this subreddit's moderators can see the token (Devvit has no secret per-subreddit settings).
+   - `telegramChannel`: the channel's numeric id (`-100...`) or its public `@username`.
+   - `targetSubreddit`: where to post (no `r/` prefix).
+   - `pollMinutes`: how often to check for new posts (1–60, default `15`).
+   - `maxPostsPerRun`: the most posts made in one check (default `1`). Any extra posts wait for the next check.
+   - `titlePrefix`: optional text put before every title, such as `[Evento]`.
+   - `includeMedia`: embed the post's photo or video (on by default). If the upload fails, the post goes out as text only.
+   - `flairId`: post flair template ID (Mod Tools → Post flair → copy ID). Optional.
+   - `flairText`: replaces the flair's text. Optional.
+   - `autoApprove`: approve each post right after it is submitted.
 
 ## Posting behavior
 
-- First run posts only the newest entries up to `maxPostsPerRun` (not full backfill).
-- Checkpoint state is updated after each successful post for crash safety.
-- Titles are explicit and clipped to Reddit-safe limits.
-- Body text is derived from feed content and converted from HTML to Reddit markdown.
-
-## Domain exceptions limitation (important)
-
-Devvit fetch permissions are restricted to exact, pre-approved hostnames per app release.
-Moderators cannot override this from subreddit settings.
-
-If your `feedUrl` hostname is not in the list below, polling will fail until the app is updated.
-
-When you hit a domain exception:
-
-1. Check the hostname in your `feedUrl` (example: `feeds.example.com`).
-1. Compare it to the `Fetch Domains` list in this README.
-1. If it is missing, contact the maintainer with:
-   - the requested hostname
-   - a sample feed URL
-1. After the maintainer ships an update that includes that hostname, reinstall/upgrade the app and re-save settings.
+- The **title** is the first non-empty line of the Telegram post. The **body** is the rest of the post, with its links, plus a "Ver en Telegram" link when the channel is public.
+- **Albums** become one Reddit post that uses the first photo or video.
+- Media larger than 20 MB (the Bot API download limit) is skipped, and that post goes out as text.
+- The app only sees posts made **after** the bot joined the channel. Telegram keeps undelivered posts for 24 hours, so posts made while the app was stopped for more than a day are not delivered.
+- The bot must not have a webhook set: `getUpdates` and webhooks cannot be used together.
 
 ## Fetch Domains
 
 This app currently fetches from:
 
-- `feeds.acast.com`
-- `feeds.megaphone.fm`
-- `feeds.npr.org`
-- `feeds.simplecast.com`
-- `mondoweiss.net`
-- `rss.buzzsprout.com`
-- `thecleanpaper.com`
-- `www.omnycontent.com`
-- `www.relay.fm`
-- `www.swr.de`
-- `www.theguardian.com`
+- `api.telegram.org`
+
+It is used for the Telegram Bot API: `getUpdates` reads new posts from the configured channel, `getFile` and the file
+download URL fetch each post's photo or video so it can be uploaded to Reddit. `api.telegram.org` is on Devvit's
+global fetch allowlist.
 
 This list is generated from the `permissions.http.domains` array in [`devvit.json`](./devvit.json) by `npm run sync:readme`. Do not edit it by hand; `npm test` fails if the two drift apart.
 
 ## Developer documentation
 
-The previous technical/developer README has moved to [DEVELOPER.md](./DEVELOPER.md).
+See [DEVELOPER.md](./DEVELOPER.md).
 
-## Support
+## Credits
 
-- Repo and issues: [github.com/jghaines/devvit-rss-to-post-bot](https://github.com/jghaines/devvit-rss-to-post-bot)
+Forked from [jghaines/devvit-rss-to-post-bot](https://github.com/jghaines/devvit-rss-to-post-bot) (an RSS → Reddit bot), and rewritten to read from Telegram.

@@ -6,9 +6,13 @@ Run tests with `npm test` (uses vitest). All tests must pass before committing.
 
 ## Deployment workflow
 
-This app is owned and deployed by the Reddit account `hardforkbot`. Devvit CLI auth
-(`npx devvit login`) for playtest, upload, and publish must be logged in as `hardforkbot`
-(the CLI should print `Logged in as hardforkbot`).
+This app (`telegram2post`) is owned and deployed by the Reddit account `dadnothere`.
+Devvit CLI auth (`npx devvit login`) for playtest, upload, and publish must be
+logged in as `dadnothere` (`npx devvit whoami` should print `Logged in as u/dadnothere`).
+
+The Telegram bot token is the per-subreddit setting `telegramBotToken` (one bot per
+installation; see DEVELOPER.md). Never commit it, and never log it: use
+`redactToken` from `src/core/telegram.mjs` on any error text that could contain it.
 
 Always test and commit before publishing (`devvit publish`).
 Publishing requires a clean git state (no uncommitted or untracked changes).

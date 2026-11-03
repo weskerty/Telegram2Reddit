@@ -1,17 +1,12 @@
 {
-  "name": "rss-post-bot",
+  "name": "telegram2post",
   "version": "0.0.0",
   "private": true,
-  "description": "Devvit RSS-to-link-post bot with checkpoint tracking and local CLI harness.",
+  "description": "Devvit bot that reposts a Telegram channel's posts (text, photo, video) to a subreddit.",
   "type": "module",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "local:test": "node scripts/local-poll.mjs --dry-run",
-    "local:test:env": "ENV_FILE=.env.test node scripts/local-poll.mjs --dry-run",
-    "local:preview": "node scripts/local-preview.mjs",
-    "local:preview:env": "ENV_FILE=.env.test node scripts/local-preview.mjs",
-    "local:live": "node scripts/local-poll.mjs --live",
     "build": "node tools/build.mjs",
     "sync:readme": "node scripts/sync-readme-domains.mjs",
     "devvit:playtest": "npx devvit playtest",
@@ -19,11 +14,13 @@
     "release:prod": "npm test && node scripts/devvit-publish-and-tag.mjs"
   },
   "dependencies": {
+    "@devvit/media": "0.14.1",
     "@devvit/reddit": "0.14.1",
     "@devvit/redis": "0.14.1",
     "@devvit/scheduler": "0.14.1",
     "@devvit/server": "0.14.1",
     "@devvit/settings": "0.14.1",
+    "@devvit/shared-types": "0.14.1",
     "@devvit/web": "0.14.1"
   },
   "devDependencies": {

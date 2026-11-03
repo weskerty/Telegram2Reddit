@@ -1,100 +1,186 @@
+import { media } from "@devvit/media";
 import { reddit } from "@devvit/reddit";
 import { redis } from "@devvit/redis";
 import { scheduler } from "@devvit/scheduler";
 import { settings } from "@devvit/settings";
+import { RichTextBuilder } from "@devvit/shared-types/richtext/RichTextBuilder.js";
+import { markdownToRichParagraphs } from "../core/richtext.mjs";
 import {
-  DEFAULT_MAX_DEDUPE,
-  DEFAULT_MAX_POSTS_PER_RUN,
-  applyPostedEntry,
-  chooseEntriesToPost,
-  hashText,
-  parseState,
-  serializeState,
-} from "../core/bot-core.mjs";
-import { renderEntryForReddit } from "../core/post-render.mjs";
-import { parseFeedXml } from "../core/rss-parse.mjs";
-import {
-  buildPollingCron,
   clamp,
+  buildPollingCron,
   normalizeString,
   normalizeSubredditName,
   parsePositiveInt,
 } from "../core/schedule.mjs";
+import {
+  buildTelegramApiUrl,
+  buildTelegramFileUrl,
+  groupChannelPosts,
+  markSeen,
+  parseState,
+  redactToken,
+  renderTelegramPost,
+} from "../core/telegram.mjs";
 
 /**
  * Task name shared between the scheduler declaration in `devvit.json`
- * (`scheduler.tasks.poll-rss-feed`) and the runtime `scheduler.runJob` calls.
+ * (`scheduler.tasks.poll-telegram`) and the runtime `scheduler.runJob` calls.
  */
-export const JOB_NAME = "poll-rss-feed";
+export const JOB_NAME = "poll-telegram";
+
+const DEFAULT_MAX_POSTS_PER_RUN = 1;
 
 /**
- * Poll the configured RSS feed once and submit any new entries as Reddit posts.
- * Invoked by the `/internal/scheduler/poll-rss-feed` endpoint on each cron tick
- * (and the warm-up run scheduled at install/upgrade).
+ * Fetch new channel posts with `getUpdates` and submit each one as a Reddit
+ * post. Invoked by the `/internal/scheduler/poll-telegram` endpoint on each
+ * cron tick (and the warm-up run scheduled at install/upgrade).
  */
 export async function runPollJob() {
-  const feedUrl = normalizeString(await settings.get("feedUrl"));
+  const token = normalizeString(await settings.get("telegramBotToken"));
+  const channel = normalizeString(await settings.get("telegramChannel"));
   const targetSubreddit = normalizeSubredditName(await settings.get("targetSubreddit"));
   const maxPostsPerRun = parsePositiveInt(await settings.get("maxPostsPerRun"), DEFAULT_MAX_POSTS_PER_RUN);
-  const maxDedupeTrack = parsePositiveInt(await settings.get("maxDedupeTrack"), DEFAULT_MAX_DEDUPE);
-  const postKind = normalizeString(await settings.get("postKind")) || "self";
-  const titlePrefix = normalizeString(await settings.get("titlePrefix")) || "[RSS] ";
-  const maxBodyChars = parsePositiveInt(await settings.get("maxBodyChars"), 12000);
+  const titlePrefix = normalizeString(await settings.get("titlePrefix"));
+  const includeMedia = (await settings.get("includeMedia")) !== false;
+  const flairId = normalizeString(await settings.get("flairId"));
+  const flairText = normalizeString(await settings.get("flairText"));
+  const autoApprove = (await settings.get("autoApprove")) === true;
+  const flair = {
+    ...(flairId ? { flairId } : {}),
+    ...(flairText ? { flairText } : {}),
+  };
 
   console.log(
-    `[${JOB_NAME}] run started target=${targetSubreddit || "(empty)"} maxPostsPerRun=${maxPostsPerRun} postKind=${postKind}`
+    `[${JOB_NAME}] run started target=${targetSubreddit || "(empty)"} channel=${channel || "(empty)"} maxPostsPerRun=${maxPostsPerRun}`
   );
 
-  if (!feedUrl || !targetSubreddit) {
-    console.log(`[${JOB_NAME}] Missing feedUrl or targetSubreddit setting. Skipping run.`);
+  if (!token || !channel || !targetSubreddit) {
+    console.log(`[${JOB_NAME}] Missing telegramBotToken, telegramChannel or targetSubreddit setting. Skipping run.`);
     return;
   }
 
-  const stateKey = buildStateKey(feedUrl, targetSubreddit);
-  const rawState = await redis.get(stateKey);
-  let state = parseState(rawState || "");
+  const stateKey = `tg:state:${targetSubreddit}`;
+  let state = parseState(await redis.get(stateKey));
 
-  const response = await fetch(feedUrl);
-  if (!response.ok) {
-    throw new Error(`Feed request failed with status ${response.status}`);
-  }
-
-  const xml = await response.text();
-  const entries = parseFeedXml(xml);
-  console.log(`[${JOB_NAME}] Parsed entries=${entries.length}`);
-  const selected = chooseEntriesToPost({
-    entries,
-    checkpoint: state.checkpoint,
-    dedupe: state.dedupe,
-    maxPostsPerRun,
+  const updates = await callTelegram(token, "getUpdates", {
+    offset: state.offset || undefined,
+    allowed_updates: JSON.stringify(["channel_post"]),
+    timeout: 0,
   });
-  console.log(`[${JOB_NAME}] Selected entries=${selected.length}`);
+  const posts = groupChannelPosts(updates, channel).filter((post) => !state.seen.includes(post.key));
+  console.log(`[${JOB_NAME}] updates=${updates.length} newPosts=${posts.length}`);
 
-  for (const item of selected) {
-    const rendered = renderEntryForReddit(item.entry, {
-      postKind,
-      titlePrefix,
-      maxBodyChars,
-    });
+  const toPost = posts.slice(0, maxPostsPerRun);
+  for (const post of toPost) {
+    const rendered = renderTelegramPost(post.message, { titlePrefix });
+    const uploaded = includeMedia && post.media ? await uploadTelegramMedia(token, post.media) : null;
+    const common = { subredditName: targetSubreddit, title: rendered.title, ...flair };
 
-    if (rendered.postKind === "link") {
-      await reddit.submitPost({
-        subredditName: targetSubreddit,
-        title: rendered.title,
-        url: rendered.sourceUrl,
-      });
-    } else {
-      await reddit.submitPost({
-        subredditName: targetSubreddit,
-        title: rendered.title,
-        text: rendered.bodyText,
-      });
+    const submitted = uploaded
+      ? await reddit.submitPost({ ...common, richtext: buildRichtextBody(uploaded, rendered.bodyText) })
+      : await reddit.submitPost({ ...common, text: rendered.bodyText || " " });
+
+    if (autoApprove) {
+      try {
+        await submitted.approve();
+      } catch (err) {
+        console.error(`[${JOB_NAME}] approve failed: ${errorMessage(err)}`);
+      }
     }
 
-    state = applyPostedEntry(state, item, maxDedupeTrack);
-    await redis.set(stateKey, serializeState(state, maxDedupeTrack));
-    console.log(`[${JOB_NAME}] Posted fingerprint=${item.fingerprint}`);
+    state = markSeen(state, post.key, post.lastUpdateId + 1);
+    await redis.set(stateKey, JSON.stringify(state));
+    console.log(`[${JOB_NAME}] Posted ${post.key}`);
   }
+
+  // Acknowledge everything up to the first post still waiting (or the whole
+  // batch), so other chats' updates and handled albums are not fetched again.
+  const waiting = posts[toPost.length];
+  const lastUpdate = updates[updates.length - 1];
+  const offset = waiting ? waiting.firstUpdateId : lastUpdate ? lastUpdate.update_id + 1 : state.offset;
+  if (offset > state.offset) {
+    state = { ...state, offset };
+    await redis.set(stateKey, JSON.stringify(state));
+  }
+}
+
+/**
+ * @param {string} token
+ * @param {string} method
+ * @param {Record<string, string | number | undefined>} params
+ * @returns {Promise<any>}
+ */
+async function callTelegram(token, method, params) {
+  let response;
+  try {
+    response = await fetch(buildTelegramApiUrl(token, method, params));
+  } catch (err) {
+    throw new Error(`Telegram ${method} failed: ${redactToken(errorMessage(err), token)}`);
+  }
+  const body = await response.json().catch(() => null);
+  if (!response.ok || !body?.ok) {
+    const description = redactToken(String(body?.description ?? ""), token);
+    throw new Error(`Telegram ${method} failed with status ${response.status}: ${description}`);
+  }
+  return body.result;
+}
+
+/**
+ * Download a Telegram file into Reddit's media store. Returns null on failure
+ * so the caller falls back to a plain text post instead of skipping the entry.
+ *
+ * @param {string} token
+ * @param {import("../core/telegram.mjs").TelegramMedia} telegramMedia
+ * @returns {Promise<{ type: "image" | "video"; mediaUrl: string } | null>}
+ */
+async function uploadTelegramMedia(token, telegramMedia) {
+  try {
+    const file = await callTelegram(token, "getFile", { file_id: telegramMedia.fileId });
+    const asset = await media.upload({ url: buildTelegramFileUrl(token, file.file_path), type: telegramMedia.type });
+    return { type: telegramMedia.type, mediaUrl: asset.mediaUrl };
+  } catch (err) {
+    console.error(`[${JOB_NAME}] ${telegramMedia.type} upload failed: ${redactToken(errorMessage(err), token)}`);
+    return null;
+  }
+}
+
+/**
+ * @param {{ type: "image" | "video"; mediaUrl: string }} uploaded
+ * @param {string} bodyText
+ * @returns {string}
+ */
+function buildRichtextBody(uploaded, bodyText) {
+  const builder = new RichTextBuilder();
+  if (uploaded.type === "video") {
+    builder.video({ mediaUrl: uploaded.mediaUrl });
+  } else {
+    builder.image({ mediaUrl: uploaded.mediaUrl });
+  }
+  for (const lines of markdownToRichParagraphs(bodyText)) {
+    builder.paragraph((paragraph) => {
+      lines.forEach((segments, index) => {
+        if (index > 0) {
+          paragraph.linebreak();
+        }
+        for (const segment of segments) {
+          if (segment.url) {
+            paragraph.link({ text: segment.text, url: segment.url });
+          } else {
+            paragraph.text({ text: segment.text });
+          }
+        }
+      });
+    });
+  }
+  return builder.build();
+}
+
+/**
+ * @param {unknown} err
+ * @returns {string}
+ */
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -114,15 +200,6 @@ export async function schedulePollingJob() {
 }
 
 /**
- * @param {string} feedUrl
- * @param {string} subreddit
- * @returns {string}
- */
-function buildStateKey(feedUrl, subreddit) {
-  return `rss:state:${subreddit}:${hashText(feedUrl).slice(0, 16)}`;
-}
-
-/**
  * Raw Node request handler passed to `createServer`. Routes the Devvit-internal
  * endpoints declared in `devvit.json` (scheduler task + install/upgrade triggers).
  *
@@ -135,7 +212,7 @@ export async function serverOnRequest(req, rsp) {
   } catch (err) {
     const message = err instanceof Error ? err.stack ?? err.message : String(err);
     console.error(`server error; ${message}`);
-    writeJson(rsp, 500, { status: "error", message: err instanceof Error ? err.message : String(err) });
+    writeJson(rsp, 500, { status: "error", message: errorMessage(err) });
   }
 }
 
@@ -147,7 +224,7 @@ async function routeRequest(req, rsp) {
   const path = (req.url ?? "").split("?")[0];
 
   switch (path) {
-    case "/internal/scheduler/poll-rss-feed":
+    case "/internal/scheduler/poll-telegram":
       await runPollJob();
       return writeJson(rsp, 200, { status: "ok" });
     case "/internal/on-app-install":

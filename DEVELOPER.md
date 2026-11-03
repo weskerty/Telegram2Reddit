@@ -1,369 +1,53 @@
-# devvit-rss-to-post-bot
+# Developer guide
 
-[![CI](https://github.com/jghaines/devvit-rss-to-post-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/jghaines/devvit-rss-to-post-bot/actions/workflows/ci.yml)
-
-Devvit bot that polls an RSS/Atom feed and submits new entries to Reddit.
-
-It tracks the "last post" checkpoint plus a dedupe window so feed reorder/edit noise does not repost old items.
+Devvit Web app that polls a Telegram channel through the Bot API and submits each new channel post to a subreddit.
 
 ## Project layout
 
 - `src/server/index.js`: Devvit Web server entrypoint (`createServer` + listen)
-- `src/server/handlers.mjs`: internal HTTP handlers — scheduler poll job + install/upgrade triggers (Reddit submit + Redis-backed state)
-- `src/core/schedule.mjs`: poll-interval cron + settings-normalization helpers (unit tested)
-- `src/core/bot-core.mjs`: pure posting/checkpoint logic (unit tested)
-- `src/core/rss-parse.mjs`: RSS/Atom parser
-- `src/core/post-render.mjs`: title/body rendering and HTML->Reddit Markdown conversion
-- `scripts/local-poll.mjs`: local CLI harness for dry-run or live submission
+- `src/server/handlers.mjs`: internal HTTP handlers. They cover the scheduler poll job (Telegram `getUpdates`, media upload, Reddit submit, Redis state) and the install/upgrade triggers.
+- `src/core/telegram.mjs`: pure Telegram helpers: channel filtering, album grouping, media choice, text/entity → markdown, post rendering, dedupe state
+- `src/core/richtext.mjs`: markdown → richtext paragraph segments, used when a post embeds media
+- `src/core/schedule.mjs`: poll-interval cron + settings-normalization helpers
 - `tools/build.mjs`: esbuild bundle of the server entry to `dist/server/index.cjs` (CommonJS, required by Devvit Web)
-- `tests/*.test.mjs`: local tests
+- `tests/*.test.mjs`: vitest suite. The `@devvit/*` packages and `fetch` are mocked, so no network is used.
 
-The app runs on **Devvit Web** (`@devvit/web`). All configuration — server entry, event triggers, the `poll-rss-feed` scheduler task, and installation settings — lives in `devvit.json`. The Devvit CLI runs `npm run build` (via `devvit.json` `scripts`) to bundle the server before `playtest`/`upload`.
+All app configuration lives in `devvit.json`: server entry, triggers, the `poll-telegram` scheduler task, and the settings. The Devvit CLI runs `npm run build` before `playtest`/`upload`.
 
 ## Deployment account
 
-> **This app is owned and deployed by the Reddit account `hardforkbot`.**
-> Every `npx devvit login` step below must authenticate as `hardforkbot` — playtest, upload, and publish all require it. If `devvit login` reports `Logged in as <someone-else>`, run `npx devvit logout` and log back in as `hardforkbot` before continuing, otherwise the CLI will target the wrong owner's app.
+The app `telegram2post` is owned by the Reddit account `dadnothere`. `npx devvit whoami` must print `Logged in as u/dadnothere` before playtest, upload, or publish.
 
-## Local setup
+## How polling works
 
-1. Install dependencies:
+1. Every `pollMinutes`, the job calls `getUpdates` with `allowed_updates=["channel_post"]` and the stored `offset`.
+1. Updates from other chats are ignored. Album items (same `media_group_id`) are merged into one post.
+1. Up to `maxPostsPerRun` posts are submitted. After each one, Redis key `tg:state:<subreddit>` stores `{ offset, seen }`. `seen` holds the last 500 post keys, so a crash between submitting and saving cannot cause a duplicate.
+1. The offset then moves past everything handled, which tells Telegram to drop those updates. Posts over the limit stay unacknowledged and are picked up by the next run.
 
-```bash
-npm install
-```
+Media is fetched with `getFile`. Its download URL contains the bot token, and that URL is passed to `media.upload`, which downloads the file on Reddit's side. The token is redacted from every error and log line.
 
-1. Copy env template:
+## Bot token
 
-```bash
-cp .env.example .env
-```
+`telegramBotToken` is a per-installation subreddit setting, so every subreddit brings its own Telegram bot. Devvit only
+offers secret settings at the global app scope, and a global token would make every installation share one bot.
+`getUpdates` delivers each update once, so installations sharing a bot would steal each other's posts. As a result the
+token is visible to that subreddit's moderators. It must never be logged: wrap error text in `redactToken`.
 
-1. Edit `.env`:
-
-- Set `FEED_URL`
-- Set `TARGET_SUBREDDIT` (for profile posts, use `u_<your_username>`)
-- Set `POST_KIND` (`self` or `link`)
-- Set `TITLE_PREFIX` for explicit titles
-- Keep `DRY_RUN=true` for initial validation
-
-1. Run local tests:
-
-```bash
-npm test
-```
-
-1. Run local CLI dry-run:
-
-```bash
-npm run local:test
-```
-
-1. Run with deterministic test env:
-
-```bash
-npm run local:test:env
-```
-
-1. Preview exactly what would be posted (no submit):
-
-```bash
-npm run local:preview:env
-```
-
-or with your own file/URL:
-
-```bash
-npm run local:preview -- --feed ./fixtures/sample-rss.xml
-npm run local:preview -- --feed https://example.com/feed.xml
-```
-
-For machine-readable output:
-
-```bash
-npm run local:preview -- --json
-```
-
-## Title and body behavior
-
-- Title is always explicit: `TITLE_PREFIX + <rss item title>`
-- Title is automatically clipped for Reddit-safe submission (300 chars by default)
-- Body text comes from RSS `<description>` (or Atom `summary`/`content`)
-- Description HTML is converted into Reddit-compatible Markdown
-- In `POST_KIND=self`, body is submitted as post text (this is post format, not destination)
-- In `POST_KIND=self`, Reddit only receives title + URL (preview still shows converted body text)
-- Destination always comes from `TARGET_SUBREDDIT` (`MySubreddit` or `u_<your_username>`)
-
-## .env credential injection
-
-For local live submit testing (`npm run local:live`), authenticate with Devvit CLI as `hardforkbot`:
-
-```bash
-npx devvit login
-```
-
-The local runner reads access credentials from `~/.devvit/token` (or `DEVVIT_TOKEN_FILE`).
-Optional env vars:
-
-- `DEVVIT_TOKEN_FILE` (default `~/.devvit/token`)
-- `REDDIT_USER_AGENT` (optional override)
-
-If the token file is missing or expired, `npm run local:live` exits with a clear auth error and a login hint.
-
-## Devvit CLI testing
-
-Prepare config from template:
-
-```bash
-cp devvit.json.example devvit.json
-```
-
-Install dependencies:
+## Commands
 
 ```bash
 npm install
+npm test               # vitest
+npm run build          # bundle the server
+npm run devvit:upload  # uploads a new version (NOT a dry run)
+npx devvit logs <subreddit> telegram2post
 ```
 
-Authenticate with Reddit through Devvit CLI as the `hardforkbot` account:
+`devvit upload` creates a private version that can be installed on subreddits you moderate. `devvit publish` / `npm run release:prod` create a production release, and `--public` asks for an App Directory listing, which Reddit reviews.
 
-```bash
-npx devvit login
-```
+## Fetch domains
 
-The login flow opens a Reddit auth URL in your browser. Sign in as `hardforkbot` when prompted. After approval, you should see output like:
+`devvit.json` `permissions.http.domains` is the source of truth. After changing it, run `npm run sync:readme`. `tests/devvit-config.test.mjs` fails if the README list drifts.
 
-- `Your Devvit authentication token has been saved to /Users/<you>/.devvit/token`
-- `Logged in as hardforkbot`
-
-Then run:
-
-```bash
-npm run devvit:playtest
-```
-
-and upload with:
-
-```bash
-npm run devvit:upload
-```
-
-## Manual publish process
-
-Do the actual Devvit publish from a developer machine using the exact commit you want to release.
-
-Optional: keep helper branches such as `env/playtest` and `env/prod` if you want named refs for coordination, but they are not required for the publish itself.
-
-Recommended flow:
-
-1. Confirm you can run the current Devvit CLI:
-
-```bash
-npx devvit@latest --version
-```
-
-1. Check out the exact commit you want to publish:
-
-```bash
-git checkout <commit-ish>
-```
-
-1. Install dependencies and run tests:
-
-```bash
-npm ci
-npm test
-```
-
-1. Authenticate with Devvit CLI as `hardforkbot` (confirm the CLI prints `Logged in as hardforkbot`):
-
-```bash
-npx devvit login
-```
-
-1. For playtest work:
-
-```bash
-npm run devvit:playtest
-```
-
-This starts a playtest session and Devvit creates pre-release versions with a fourth segment such as `0.0.1.6`.
-
-1. For an installable production release:
-
-```bash
-npm run release:prod
-```
-
-This runs the test suite, executes `devvit publish --public`, parses the version from CLI output, creates `devvit/prod/v<version>`, and pushes that tag to `origin`.
-
-Important state distinction:
-
-- `devvit upload` uploads a private/testing version, installable only on small subreddits (<200 subscribers).
-- `devvit publish` creates a production release (unlisted by default, installable via direct link).
-- `devvit publish --public` requests public listing in the App Directory (requires Reddit review).
-
-`release:prod` adds `--public` by default, so every production release requests App Directory listing. To cut an unlisted release instead, pass `--no-public`:
-
-```bash
-npm run release:prod -- --no-public
-```
-
-That flag is handled by `scripts/devvit-publish-and-tag.mjs` (it is stripped before the CLI runs), so the unlisted path still gets the test run, clean-worktree check, and `devvit/prod/v<version>` tag.
-
-If you need to pass extra flags through to `devvit publish`, append them after `--`:
-
-```bash
-npm run release:prod -- --bump patch
-```
-
-If the publish succeeds but the helper cannot determine the version, it stops before tagging so you can tag the release manually using the version printed by Devvit CLI.
-
-Manual fallback if needed:
-
-```bash
-git tag -a "devvit/prod/v<version>" -m "Devvit prod deployment <version>"
-git push origin "refs/tags/devvit/prod/v<version>"
-```
-
-Playtest stays manual:
-
-```bash
-npm run devvit:playtest
-```
-
-Playtest versions are usually too noisy to tag automatically. If you explicitly want to preserve a particular pre-release, tag it manually after the playtest run.
-
-If you cut an unlisted release with `--no-public` and later want to request App Directory listing for it, do that as a separate manual step:
-
-```bash
-npx devvit publish --public
-```
-
-As of 2026-03-17, public listing is still a Reddit review step rather than something that happens automatically at publish time — `--public` submits the request, it does not make the app public by itself.
-
-## Why we are not automating Devvit publish in GitHub Actions
-
-As of 2026-03-16, Devvit documentation still describes authentication as an interactive `npx devvit login` flow that writes credentials to `~/.devvit/token`.
-
-We are not using GitHub-hosted Actions for unattended Devvit publish because:
-
-- Devvit does not document a service-account, API-key, or OIDC-style publish credential for CI.
-- The CLI token is a user session artifact, not a documented machine credential.
-- Devvit says CLI tokens are auto-refreshed, but GitHub-hosted runners are ephemeral, so refreshed state is not durable across jobs.
-- In practice this means a copied token may work temporarily, but it is not a reliable long-lived credential model for unattended publishing.
-
-Until Devvit documents a proper non-interactive publish credential, treat Devvit publish as a manual step on a logged-in developer machine or on a persistent self-hosted runner that you control.
-
-Before upload, verify `devvit-rss-to-post-bot/devvit.json`:
-
-- `name` is globally unique and at most 16 characters
-- `permissions.http.domains` includes your RSS host (exact hostname, no protocol)
-
-`devvit.json` is the source of truth for fetch domains. After editing `permissions.http.domains`, regenerate the public list in `README.md`:
-
-```bash
-npm run sync:readme
-```
-
-`tests/devvit-config.test.mjs` fails if `devvit.json` does not parse as JSON, or if the README list drifts from `permissions.http.domains` — so a forgotten sync is caught by `npm test` (and therefore by `release:prod`, which runs the suite before publishing).
-
-Set runtime values after install/playtest in app installation settings:
-
-- `feedUrl`
-- `targetSubreddit`
-- `pollMinutes` (set `60` for hourly)
-- `maxPostsPerRun` (set `1` for safer initial rollout)
-
-## Posting from RSS feed to a subreddit (developer)
-
-Use this when you want to post feed entries into a real subreddit (`r/<name>`) rather than a user profile (`u_<name>`).
-
-### Option A: local CLI (single run)
-
-1. Authenticate once with Devvit CLI as `hardforkbot`:
-
-```bash
-npx devvit login
-```
-
-1. Preview exactly what will be posted:
-
-```bash
-POST_KIND=self \
-FEED_URL=https://feeds.simplecast.com/your-feed-id \
-TARGET_SUBREDDIT=YourSubreddit \
-MAX_POSTS_PER_RUN=1 \
-STATE_FILE=.tmp/subreddit-preview-state.json \
-npm run local:preview
-```
-
-1. Submit one live post to the subreddit:
-
-```bash
-POST_KIND=self \
-FEED_URL=https://feeds.simplecast.com/your-feed-id \
-TARGET_SUBREDDIT=YourSubreddit \
-MAX_POSTS_PER_RUN=1 \
-STATE_FILE=.tmp/subreddit-live-state.json \
-npm run local:live
-```
-
-Notes:
-
-- Use `TARGET_SUBREDDIT=YourSubreddit` (no `r/` prefix).
-- Keep a dedicated `STATE_FILE` per feed/subreddit pair so checkpoints do not collide.
-- Start with `MAX_POSTS_PER_RUN=1` to avoid accidental backfill bursts.
-
-### Option B: deployed Devvit app (scheduled posting)
-
-1. Ensure the feed hostname is listed in `devvit.json` under `permissions.http.domains`.
-1. Upload/install the app and open installation settings.
-1. Set:
-   - `feedUrl=https://...`
-   - `targetSubreddit=YourSubreddit`
-   - `postKind=link` or `self`
-   - `pollMinutes=60` (or your preferred interval)
-   - `maxPostsPerRun=1` for initial rollout
-1. Save settings and wait for scheduled execution.
-1. Verify posts in the target subreddit and review logs for failures.
-
-If the feed hostname is not in `permissions.http.domains`, fetch will fail with a domain exception until the app is updated.
-
-## Local feed -> self-post test
-
-Preview exactly what would be posted (no Reddit submit):
-
-```bash
-POST_KIND=self \
-FEED_URL=./fixtures/6HKOhNgS.rss.xml \
-TARGET_SUBREDDIT=u_yourusername \
-STATE_FILE=.tmp/selfpost-test.json \
-MAX_POSTS_PER_RUN=1 \
-npm run local:preview
-```
-
-Submit a real self-post to Reddit (uses `~/.devvit/token` from the `hardforkbot` Devvit CLI login):
-
-```bash
-POST_KIND=self \
-FEED_URL=./fixtures/6HKOhNgS.rss.xml \
-TARGET_SUBREDDIT=u_yourusername \
-STATE_FILE=.tmp/selfpost-live-test.json \
-MAX_POSTS_PER_RUN=1 \
-npm run local:live
-```
-
-Recommended: use a dedicated test subreddit and a fresh `STATE_FILE` for each live test run.
-
-## Notes
-
-- Local state is saved to `STATE_FILE` (default `.local-state.json`).
-- On first run (no checkpoint yet), the bot posts only the newest `MAX_POSTS_PER_RUN` entries, not the entire feed history.
-- On each successful post, checkpoint state is updated immediately for crash safety.
-- Use `MAX_BODY_CHARS` to clip long description bodies before submit.
-
-## Fetch Domains
-
-The app requests the following external HTTP fetch domain:
-
-- `feeds.simplecast.com` - reads the configured RSS feed for polling and post generation.
+The Devvit fetch policy rejects personal domains. Telegram is reachable because `api.telegram.org` is on the global allowlist; it still has to be listed in `devvit.json`.

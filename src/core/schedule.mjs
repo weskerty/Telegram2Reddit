@@ -1,5 +1,5 @@
 /**
- * Scheduling and settings-normalization helpers for the RSS poll bot.
+ * Scheduling and settings-normalization helpers for the Telegram poll bot.
  *
  * These are pure functions split out from the Devvit entry point so they stay
  * unit-testable without the Devvit Web runtime.

@@ -1,16 +1,16 @@
 # Privacy Policy
 
-Effective date: February 18, 2026
+Effective date: November 3, 2026
 
-This Privacy Policy describes how `rss-post-bot` (the "App") collects, uses, stores, and discloses information when used on Reddit.
+This Privacy Policy describes how `telegram2post` (the "App") collects, uses, stores, and discloses information when used on Reddit.
 
 ## 1. Information We Process
 
 When installed and used, the App may process:
 
-- installation settings configured by moderators (for example feed URL, target subreddit, post options),
-- RSS/Atom feed content from configured sources (for example item title, link, description),
-- operational identifiers needed to prevent duplicate posts (for example feed item fingerprints/checkpoints),
+- installation settings configured by moderators (for example Telegram channel, target subreddit, post options),
+- posts from the configured Telegram channel, received through the Telegram Bot API (text, links, photos, videos),
+- operational identifiers needed to prevent duplicate posts (for example Telegram update offsets and post identifiers),
 - subreddit and app context metadata provided by Reddit for execution, and
 - application logs for debugging and reliability.
 
@@ -20,7 +20,7 @@ The App is designed to store minimal operational data required for posting and d
 
 We use processed information to:
 
-- fetch and parse configured feed content,
+- read new posts from the configured Telegram channel,
 - generate and submit Reddit posts per your settings,
 - schedule and run recurring polling jobs, and
 - maintain state to avoid reposting already-processed items.
@@ -38,7 +38,7 @@ We do not sell personal information.
 Information may be shared only as necessary to operate the App, including:
 
 - with Reddit platform services and APIs,
-- with configured feed hosts when fetching content, and
+- with Telegram (`api.telegram.org`) when reading channel posts and downloading their media, and
 - with service providers used by Reddit/Devvit infrastructure.
 
 ## 5. Legal Basis and Compliance
@@ -71,4 +71,4 @@ This Privacy Policy may be updated from time to time. Continued use of the App a
 
 ## 11. Contact
 
-For privacy questions or requests, contact: <https://github.com/jghaines/devvit-rss-to-post-bot/discussions>
+For privacy questions or requests, contact: Reddit user u/dadnothere

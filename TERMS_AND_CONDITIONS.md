@@ -1,17 +1,17 @@
 # Terms and Conditions
 
-Effective date: February 18, 2026
+Effective date: November 3, 2026
 
-These Terms and Conditions ("Terms") govern your use of the `rss-post-bot` application (the "App") on Reddit.
+These Terms and Conditions ("Terms") govern your use of the `telegram2post` application (the "App") on Reddit.
 
 By installing, configuring, or using the App, you agree to these Terms.
 
 ## 1. App Overview
 
-`rss-post-bot` is a Reddit Devvit application that:
+`telegram2post` is a Reddit Devvit application that:
 
-- fetches RSS/Atom feed content from configured domains,
-- converts feed items into Reddit posts based on configuration,
+- reads posts from a configured Telegram channel through the Telegram Bot API,
+- converts those posts (text, links, photos, videos) into Reddit posts based on configuration,
 - posts to configured subreddit targets using Reddit APIs, and
 - stores minimal operational state for deduplication and scheduling.
 
@@ -31,14 +31,14 @@ You agree not to use the App to:
 - post unlawful, abusive, fraudulent, or harmful content, or
 - interfere with Reddit, the App, or other users.
 
-You are responsible for all feed sources and settings you configure.
+You are responsible for the Telegram channel and settings you configure, and for having the right to repost its content.
 
 ## 4. Third-Party Services
 
 The App depends on third-party services, including:
 
 - Reddit APIs and infrastructure, and
-- external RSS/Atom feed hosts configured by you.
+- the Telegram Bot API (`api.telegram.org`).
 
 Availability, accuracy, and performance of those services are outside the App operator's control.
 
@@ -52,7 +52,7 @@ TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE APP OPERATOR WILL NOT BE LIABLE FOR 
 
 ## 7. Indemnification
 
-You agree to indemnify and hold harmless the App operator from claims, liabilities, damages, and expenses arising from your use of the App, your configured content sources, or your violation of these Terms.
+You agree to indemnify and hold harmless the App operator from claims, liabilities, damages, and expenses arising from your use of the App, your configured Telegram channel, or your violation of these Terms.
 
 ## 8. Suspension or Termination
 
@@ -64,10 +64,10 @@ These Terms may be updated from time to time. Continued use of the App after upd
 
 ## 10. Contact
 
-For questions about these Terms, post to <https://github.com/jghaines/devvit-rss-to-post-bot/discussions>
+For questions about these Terms, message Reddit user u/dadnothere
 
 ## 11. Governing Law
 
-These Terms are governed by the laws of the Northern Territory of Australia and the Commonwealth of Australia.
-You and the App operator submit to the non-exclusive jurisdiction of the courts of the Northern Territory.
+These Terms are governed by the laws of the Republic of Paraguay.
+You and the App operator submit to the non-exclusive jurisdiction of the courts of Asunción, Paraguay.
 Nothing in these Terms limits any non-excludable rights under applicable consumer law.
