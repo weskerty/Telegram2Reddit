@@ -226,8 +226,8 @@ export function entitiesToMarkdown(text, entities) {
 }
 
 /**
- * Title = first non-empty line of the message; body = the remaining lines plus
- * a link back to the post when the channel is public.
+ * Title = first non-empty line of the message; body = the remaining lines.
+ * No link back to Telegram: Reddit's spam filter removes posts with t.me links.
  *
  * @param {TelegramMessage} message
  * @param {{ titlePrefix?: string; maxTitleChars?: number; maxBodyChars?: number }} [options]
@@ -242,20 +242,12 @@ export function renderTelegramPost(message, options = {}) {
   const markdownLines = entitiesToMarkdown(text, entities).split("\n");
   const titleIndex = plainLines.findIndex((line) => line.trim() !== "");
 
-  const heading = titleIndex === -1 ? message.chat.title || "Telegram" : plainLines[titleIndex].trim();
+  const heading = titleIndex === -1 ? message.chat.title || "New post" : plainLines[titleIndex].trim();
   const prefix = String(options.titlePrefix || "").trim();
   const title = clipText(prefix ? `${prefix} ${heading}` : heading, maxTitleChars);
 
-  const bodyParts = [];
-  const rest = markdownLines.slice(titleIndex + 1).join("\n").trim();
-  if (rest) {
-    bodyParts.push(rest);
-  }
-  if (message.chat.username) {
-    bodyParts.push(`[Ver en Telegram](https://t.me/${message.chat.username}/${message.message_id})`);
-  }
-
-  return { title, bodyText: clipText(bodyParts.join("\n\n"), maxBodyChars) };
+  const body = titleIndex === -1 ? "" : markdownLines.slice(titleIndex + 1).join("\n").trim();
+  return { title, bodyText: clipText(body, maxBodyChars) };
 }
 
 /**

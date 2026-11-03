@@ -100,7 +100,7 @@ test("entitiesToMarkdown converts text links and bare urls with UTF-16 offsets",
   );
 });
 
-test("renderTelegramPost uses the first line as title and links back to the channel", () => {
+test("renderTelegramPost uses the first line as title and the rest as body, with no link back", () => {
   const rendered = renderTelegramPost(
     {
       message_id: 329,
@@ -110,7 +110,7 @@ test("renderTelegramPost uses the first line as title and links back to the chan
     { titlePrefix: "[Evento]" }
   );
   assert.equal(rendered.title, "[Evento] Birra y Politica");
-  assert.equal(rendered.bodyText, "En este encuentro...\n\n🗓️ 30/10/26 9PM\n\n[Ver en Telegram](https://t.me/cheagana/329)");
+  assert.equal(rendered.bodyText, "En este encuentro...\n\n🗓️ 30/10/26 9PM");
 });
 
 test("renderTelegramPost falls back to the channel title and clips long titles", () => {

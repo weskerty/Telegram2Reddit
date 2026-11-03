@@ -115,7 +115,7 @@ test("runPollJob posts a text message once and is idempotent on rerun", async ()
   expect(harness.submitPost).toHaveBeenCalledTimes(1);
   const submitArgs = harness.submitPost.mock.calls[0][0];
   expect(submitArgs).toMatchObject({ subredditName: TARGET_SUBREDDIT, title: "Birra y Politica" });
-  expect(submitArgs.text).toBe("Hablemos.\n\n🗓️ 30/10\n\n[Ver en Telegram](https://t.me/cheagana/10)");
+  expect(submitArgs.text).toBe("Hablemos.\n\n🗓️ 30/10");
   expect(readState()).toEqual({ offset: 11, seen: ["m:-1001234567890:10"] });
 
   const firstUrl = new URL(String(fetchSpy.mock.calls[0][0]));
@@ -147,7 +147,7 @@ test("runPollJob embeds an uploaded photo in a richtext post", async () => {
   const doc = JSON.stringify(JSON.parse(submitArgs.richtext));
   expect(doc).toContain("https://i.redd.it/media-1.jpg");
   expect(doc).toContain("https://maps.example.com/x");
-  expect(doc).toContain("https://t.me/cheagana/10");
+  expect(doc).not.toContain("t.me/");
 });
 
 test("runPollJob uploads videos as video", async () => {
