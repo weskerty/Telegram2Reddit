@@ -17,6 +17,8 @@ const harness = vi.hoisted(() => ({
   approve: vi.fn(),
   upload: vi.fn(),
   runJob: vi.fn(),
+  listJobs: vi.fn(),
+  cancelJob: vi.fn(),
 }));
 
 vi.mock("@devvit/settings", () => ({
@@ -29,8 +31,17 @@ vi.mock("@devvit/settings", () => ({
 vi.mock("@devvit/redis", () => ({
   redis: {
     get: async (key) => (harness.redisStore.has(key) ? harness.redisStore.get(key) : undefined),
-    set: async (key, value) => {
+    set: async (key, value, options) => {
+      if (options?.nx && harness.redisStore.has(key)) {
+        return "";
+      }
       harness.redisStore.set(key, value);
+      return "OK";
+    },
+    del: async (...keys) => {
+      for (const key of keys) {
+        harness.redisStore.delete(key);
+      }
     },
   },
 }));
@@ -51,6 +62,8 @@ vi.mock("@devvit/media", () => ({
 vi.mock("@devvit/scheduler", () => ({
   scheduler: {
     runJob: harness.runJob,
+    listJobs: harness.listJobs,
+    cancelJob: harness.cancelJob,
   },
 }));
 
@@ -113,6 +126,10 @@ beforeEach(() => {
   harness.upload.mockResolvedValue({ mediaId: "media-1", mediaUrl: "https://i.redd.it/media-1.jpg" });
   harness.runJob.mockReset();
   harness.runJob.mockResolvedValue("scheduled-job-id");
+  harness.listJobs.mockReset();
+  harness.listJobs.mockResolvedValue([]);
+  harness.cancelJob.mockReset();
+  harness.cancelJob.mockResolvedValue(undefined);
   vi.restoreAllMocks();
 });
 
@@ -342,4 +359,41 @@ test("serverOnRequest routes the verify-post task with its data", async () => {
 
   expect(harness.getPostById).toHaveBeenCalledWith("t3_abc");
   expect(rsp.writeHead.mock.calls[0][0]).toBe(200);
+});
+
+test("schedulePollingJob cancels poll jobs left by earlier installs/upgrades but keeps verify checks", async () => {
+  harness.listJobs.mockResolvedValue([
+    { id: "cron-1", name: JOB_NAME, cron: "*/15 * * * *" },
+    { id: "cron-2", name: JOB_NAME, cron: "*/15 * * * *" },
+    { id: "verify-1", name: VERIFY_JOB_NAME, runAt: new Date(), data: { postId: "t3_x" } },
+  ]);
+
+  await schedulePollingJob();
+
+  expect(harness.cancelJob.mock.calls.map((call) => call[0])).toEqual(["cron-1", "cron-2"]);
+  expect(harness.runJob.mock.calls.map((call) => call[0].cron ?? "warm-up")).toEqual(["*/15 * * * *", "warm-up"]);
+});
+
+test("overlapping poll runs post each message only once", async () => {
+  mockTelegram([channelPost(10, { text: "Feria" })]);
+  vi.spyOn(console, "log").mockImplementation(() => {});
+
+  await Promise.all([runPollJob(), runPollJob(), runPollJob()]);
+
+  expect(harness.submitPost).toHaveBeenCalledTimes(1);
+  expect(harness.redisStore.has(`tg:lock:${TARGET_SUBREDDIT}`)).toBe(false);
+});
+
+test("runPollJob skips while another run holds the lock, and releases its own lock on errors", async () => {
+  const fetchSpy = mockTelegram([channelPost(10, { text: "Feria" })]);
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  harness.redisStore.set(`tg:lock:${TARGET_SUBREDDIT}`, "someone-else");
+
+  await runPollJob();
+  expect(fetchSpy).not.toHaveBeenCalled();
+
+  harness.redisStore.delete(`tg:lock:${TARGET_SUBREDDIT}`);
+  harness.submitPost.mockRejectedValueOnce(new Error("reddit down"));
+  await expect(runPollJob()).rejects.toThrow("reddit down");
+  expect(harness.redisStore.has(`tg:lock:${TARGET_SUBREDDIT}`)).toBe(false);
 });

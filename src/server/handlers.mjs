@@ -36,6 +36,8 @@ export const VERIFY_JOB_NAME = "verify-post";
 const VERIFY_DELAY_MS = 60_000;
 
 const DEFAULT_MAX_POSTS_PER_RUN = 1;
+/** Longer than any real run (uploads included); expires a lock left by a crashed run. */
+const LOCK_TTL_MS = 5 * 60_000;
 
 /**
  * Fetch new channel posts with `getUpdates` and submit each one as a Reddit
@@ -66,47 +68,63 @@ export async function runPollJob() {
     return;
   }
 
-  const stateKey = `tg:state:${targetSubreddit}`;
-  let state = parseState(await redis.get(stateKey));
-
-  const updates = await callTelegram(token, "getUpdates", {
-    offset: state.offset || undefined,
-    allowed_updates: JSON.stringify(["channel_post"]),
-    timeout: 0,
-  });
-  const posts = groupChannelPosts(updates, channel).filter((post) => !state.seen.includes(post.key));
-  console.log(`[${JOB_NAME}] updates=${updates.length} newPosts=${posts.length}`);
-
-  const toPost = posts.slice(0, maxPostsPerRun);
-  for (const post of toPost) {
-    const rendered = renderTelegramPost(post.message, { titlePrefix });
-    const uploaded = includeMedia && post.media ? await uploadTelegramMedia(token, post.media) : null;
-    const common = { subredditName: targetSubreddit, title: rendered.title, ...flair };
-
-    const submitted = uploaded
-      ? await reddit.submitPost({ ...common, richtext: buildRichtextBody(uploaded, rendered.bodyText) })
-      : await reddit.submitPost({ ...common, text: rendered.bodyText || " " });
-
-    state = markSeen(state, post.key, post.lastUpdateId + 1);
-    await redis.set(stateKey, JSON.stringify(state));
-    console.log(
-      `[${JOB_NAME}] Posted ${post.key} id=${submitted.id} url=https://www.reddit.com${submitted.permalink ?? ""} autoApprove=${autoApprove}`
-    );
-
-    if (autoApprove) {
-      await approvePost(submitted.id, () => submitted.approve());
-    }
-    await scheduleVerify(submitted.id);
+  // Overlapping runs (a leftover cron, a slow run) would read the same state,
+  // post the same message twice, and make Telegram answer 409 Conflict.
+  const lockKey = `tg:lock:${targetSubreddit}`;
+  const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  await redis.set(lockKey, runId, { nx: true, expiration: new Date(Date.now() + LOCK_TTL_MS) });
+  if ((await redis.get(lockKey)) !== runId) {
+    console.log(`[${JOB_NAME}] Another run is in progress. Skipping run.`);
+    return;
   }
 
-  // Acknowledge everything up to the first post still waiting (or the whole
-  // batch), so other chats' updates and handled albums are not fetched again.
-  const waiting = posts[toPost.length];
-  const lastUpdate = updates[updates.length - 1];
-  const offset = waiting ? waiting.firstUpdateId : lastUpdate ? lastUpdate.update_id + 1 : state.offset;
-  if (offset > state.offset) {
-    state = { ...state, offset };
-    await redis.set(stateKey, JSON.stringify(state));
+  try {
+    const stateKey = `tg:state:${targetSubreddit}`;
+    let state = parseState(await redis.get(stateKey));
+
+    const updates = await callTelegram(token, "getUpdates", {
+      offset: state.offset || undefined,
+      allowed_updates: JSON.stringify(["channel_post"]),
+      timeout: 0,
+    });
+    const posts = groupChannelPosts(updates, channel).filter((post) => !state.seen.includes(post.key));
+    console.log(`[${JOB_NAME}] updates=${updates.length} newPosts=${posts.length}`);
+
+    const toPost = posts.slice(0, maxPostsPerRun);
+    for (const post of toPost) {
+      const rendered = renderTelegramPost(post.message, { titlePrefix });
+      const uploaded = includeMedia && post.media ? await uploadTelegramMedia(token, post.media) : null;
+      const common = { subredditName: targetSubreddit, title: rendered.title, ...flair };
+
+      const submitted = uploaded
+        ? await reddit.submitPost({ ...common, richtext: buildRichtextBody(uploaded, rendered.bodyText) })
+        : await reddit.submitPost({ ...common, text: rendered.bodyText || " " });
+
+      state = markSeen(state, post.key, post.lastUpdateId + 1);
+      await redis.set(stateKey, JSON.stringify(state));
+      console.log(
+        `[${JOB_NAME}] Posted ${post.key} id=${submitted.id} url=https://www.reddit.com${submitted.permalink ?? ""} autoApprove=${autoApprove}`
+      );
+
+      if (autoApprove) {
+        await approvePost(submitted.id, () => submitted.approve());
+      }
+      await scheduleVerify(submitted.id);
+    }
+
+    // Acknowledge everything up to the first post still waiting (or the whole
+    // batch), so other chats' updates and handled albums are not fetched again.
+    const waiting = posts[toPost.length];
+    const lastUpdate = updates[updates.length - 1];
+    const offset = waiting ? waiting.firstUpdateId : lastUpdate ? lastUpdate.update_id + 1 : state.offset;
+    if (offset > state.offset) {
+      state = { ...state, offset };
+      await redis.set(stateKey, JSON.stringify(state));
+    }
+  } finally {
+    if ((await redis.get(lockKey)) === runId) {
+      await redis.del(lockKey);
+    }
   }
 }
 
@@ -241,12 +259,19 @@ function errorMessage(err) {
 /**
  * (Re)register the recurring polling cron and a one-off warm-up run. Invoked by
  * the `/internal/on-app-install` and `/internal/on-app-upgrade` triggers so the
- * cron interval tracks the per-installation `pollMinutes` setting.
+ * cron interval tracks the per-installation `pollMinutes` setting. Jobs from
+ * earlier installs/upgrades are cancelled first: otherwise every upgrade adds
+ * another cron and the poll runs once per upgrade, in parallel.
  */
 export async function schedulePollingJob() {
   const pollMinutes = clamp(parsePositiveInt(await settings.get("pollMinutes"), 15), 1, 60);
   const cron = buildPollingCron(pollMinutes);
-  console.log(`[${JOB_NAME}] Scheduling with cron=${cron}`);
+
+  const stale = (await scheduler.listJobs()).filter((job) => job.name === JOB_NAME);
+  for (const job of stale) {
+    await scheduler.cancelJob(job.id);
+  }
+  console.log(`[${JOB_NAME}] Cancelled ${stale.length} old job(s). Scheduling with cron=${cron}`);
   await scheduler.runJob({ name: JOB_NAME, cron });
 
   const warmupAt = new Date(Date.now() + 15_000);

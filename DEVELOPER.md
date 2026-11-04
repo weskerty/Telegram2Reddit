@@ -20,6 +20,7 @@ The app `telegram2post` is owned by the Reddit account `dadnothere`. `npx devvit
 
 ## How polling works
 
+1. Install and upgrade triggers cancel every existing `poll-telegram` job before scheduling the cron again. Without this, each upgrade added one more cron, and the parallel runs posted duplicates and made Telegram answer `409 Conflict`. Each run also takes a Redis lock (`tg:lock:<subreddit>`, 5 min TTL) and skips if another run holds it.
 1. Every `pollMinutes`, the job calls `getUpdates` with `allowed_updates=["channel_post"]` and the stored `offset`.
 1. Updates from other chats are ignored. Album items (same `media_group_id`) are merged into one post.
 1. Up to `maxPostsPerRun` posts are submitted. After each one, Redis key `tg:state:<subreddit>` stores `{ offset, seen }`. `seen` holds the last 500 post keys, so a crash between submitting and saving cannot cause a duplicate.
