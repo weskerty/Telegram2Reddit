@@ -16,6 +16,7 @@ import {
   buildTelegramApiUrl,
   buildTelegramFileUrl,
   groupChannelPosts,
+  markRetry,
   markSeen,
   parseState,
   redactToken,
@@ -38,6 +39,8 @@ const VERIFY_DELAY_MS = 60_000;
 const DEFAULT_MAX_POSTS_PER_RUN = 1;
 /** Longer than any real run (uploads included); expires a lock left by a crashed run. */
 const LOCK_TTL_MS = 5 * 60_000;
+/** Runs that try a video before falling back to its cover image (≈30 min at 15-min polls). */
+const MAX_VIDEO_ATTEMPTS = 3;
 
 /**
  * Fetch new channel posts with `getUpdates` and submit each one as a Reddit
@@ -91,9 +94,29 @@ export async function runPollJob() {
     console.log(`[${JOB_NAME}] updates=${updates.length} newPosts=${posts.length}`);
 
     const toPost = posts.slice(0, maxPostsPerRun);
+    let handled = 0;
     for (const post of toPost) {
       const rendered = renderTelegramPost(post.message, { titlePrefix });
-      const uploaded = includeMedia && post.media ? await uploadTelegramMedia(token, post.media) : null;
+      const wanted = includeMedia ? post.media : null;
+      let uploaded = wanted ? await uploadTelegramMedia(token, wanted) : null;
+
+      // Reddit can take longer to process a video than media.upload waits for.
+      // Hold the post (stopping here keeps channel order) and retry on a later
+      // run; after the last attempt, fall back to the video's cover image.
+      if (wanted?.type === "video" && !uploaded) {
+        const attempt = (state.retries[post.key] ?? 0) + 1;
+        if (attempt < MAX_VIDEO_ATTEMPTS) {
+          state = markRetry(state, post.key);
+          await redis.set(stateKey, JSON.stringify(state));
+          console.log(`[${JOB_NAME}] video not ready for ${post.key}; retrying next run (attempt ${attempt}/${MAX_VIDEO_ATTEMPTS})`);
+          break;
+        }
+        if (wanted.posterFileId) {
+          console.log(`[${JOB_NAME}] video failed ${MAX_VIDEO_ATTEMPTS} times for ${post.key}; using its cover image`);
+          uploaded = await uploadTelegramMedia(token, { type: "image", fileId: wanted.posterFileId });
+        }
+      }
+
       const common = { subredditName: targetSubreddit, title: rendered.title, ...flair };
 
       const submitted = uploaded
@@ -110,11 +133,12 @@ export async function runPollJob() {
         await approvePost(submitted.id, () => submitted.approve());
       }
       await scheduleVerify(submitted.id);
+      handled += 1;
     }
 
     // Acknowledge everything up to the first post still waiting (or the whole
     // batch), so other chats' updates and handled albums are not fetched again.
-    const waiting = posts[toPost.length];
+    const waiting = posts[handled];
     const lastUpdate = updates[updates.length - 1];
     const offset = waiting ? waiting.firstUpdateId : lastUpdate ? lastUpdate.update_id + 1 : state.offset;
     if (offset > state.offset) {

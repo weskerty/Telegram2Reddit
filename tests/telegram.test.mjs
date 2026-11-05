@@ -5,6 +5,7 @@ import {
   buildTelegramApiUrl,
   entitiesToMarkdown,
   groupChannelPosts,
+  markRetry,
   markSeen,
   matchesChannel,
   parseState,
@@ -70,6 +71,11 @@ test("groupChannelPosts filters other chats and merges albums", () => {
 
 test("pickMedia prefers video, picks the largest photo, and skips oversized files", () => {
   assert.deepEqual(pickMedia({ message_id: 1, chat: CHAT, video: { file_id: "v" } }), { type: "video", fileId: "v" });
+  assert.deepEqual(pickMedia({ message_id: 1, chat: CHAT, video: { file_id: "v", thumbnail: { file_id: "t" } } }), {
+    type: "video",
+    fileId: "v",
+    posterFileId: "t",
+  });
   assert.deepEqual(pickMedia({ message_id: 1, chat: CHAT, animation: { file_id: "a" } }), { type: "video", fileId: "a" });
   assert.deepEqual(
     pickMedia({
@@ -120,14 +126,22 @@ test("renderTelegramPost falls back to the channel title and clips long titles",
 });
 
 test("parseState tolerates bad input and markSeen caps the history", () => {
-  assert.deepEqual(parseState("not json"), { offset: 0, seen: [] });
-  assert.deepEqual(parseState(JSON.stringify({ offset: 7, seen: ["a", 3] })), { offset: 7, seen: ["a"] });
+  assert.deepEqual(parseState("not json"), { offset: 0, seen: [], retries: {} });
+  assert.deepEqual(parseState(JSON.stringify({ offset: 7, seen: ["a", 3], retries: { a: 2, b: "x", c: 0 } })), {
+    offset: 7,
+    seen: ["a"],
+    retries: { a: 2 },
+  });
 
   let state = parseState("");
   state = markSeen(state, "a", 2, 2);
   state = markSeen(state, "b", 3, 2);
   state = markSeen(state, "c", 4, 2);
-  assert.deepEqual(state, { offset: 4, seen: ["c", "b"] });
+  assert.deepEqual(state, { offset: 4, seen: ["c", "b"], retries: {} });
+
+  state = markRetry(markRetry(state, "d"), "d");
+  assert.deepEqual(state.retries, { d: 2 });
+  assert.deepEqual(markSeen(state, "d", 5, 2).retries, {});
 });
 
 test("markdownToRichParagraphs splits paragraphs, lines and links", () => {

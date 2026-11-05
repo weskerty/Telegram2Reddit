@@ -14,7 +14,7 @@ export const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 /**
  * @typedef {{ id: number; title?: string; username?: string; type?: string }} TelegramChat
  * @typedef {{ type: string; offset: number; length: number; url?: string }} TelegramEntity
- * @typedef {{ file_id: string; file_size?: number; width?: number; height?: number }} TelegramFile
+ * @typedef {{ file_id: string; file_size?: number; width?: number; height?: number; thumbnail?: TelegramFile; thumb?: TelegramFile }} TelegramFile
  * @typedef {Object} TelegramMessage
  * @property {number} message_id
  * @property {TelegramChat} chat
@@ -30,7 +30,8 @@ export const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
  */
 
 /**
- * @typedef {{ type: "image" | "video"; fileId: string }} TelegramMedia
+ * @typedef {{ type: "image" | "video"; fileId: string; posterFileId?: string }} TelegramMedia
+ *   `posterFileId` is a video's cover image, used when the video itself cannot be uploaded.
  * @typedef {Object} ChannelPost
  * @property {string} key Dedupe key: one per message, or one per album.
  * @property {number} firstUpdateId
@@ -158,7 +159,11 @@ export function groupChannelPosts(updates, channel) {
 export function pickMedia(message) {
   const video = message.video || message.animation;
   if (video) {
-    return fitsDownloadLimit(video) ? { type: "video", fileId: video.file_id } : null;
+    if (!fitsDownloadLimit(video)) {
+      return null;
+    }
+    const poster = (video.thumbnail || video.thumb)?.file_id;
+    return { type: "video", fileId: video.file_id, ...(poster ? { posterFileId: poster } : {}) };
   }
   const photos = Array.isArray(message.photo) ? message.photo : [];
   const largest = photos.reduce(
@@ -251,7 +256,8 @@ export function renderTelegramPost(message, options = {}) {
 }
 
 /**
- * @typedef {{ offset: number; seen: string[] }} BotState
+ * @typedef {{ offset: number; seen: string[]; retries: Record<string, number> }} BotState
+ *   `retries` counts failed video uploads per post key, until the post is handled.
  */
 
 /**
@@ -261,12 +267,20 @@ export function renderTelegramPost(message, options = {}) {
 export function parseState(raw) {
   try {
     const parsed = JSON.parse(raw || "");
+    /** @type {Record<string, number>} */
+    const retries = {};
+    for (const [key, count] of Object.entries(parsed?.retries ?? {})) {
+      if (Number.isInteger(count) && count > 0) {
+        retries[key] = count;
+      }
+    }
     return {
       offset: Number.isInteger(parsed?.offset) ? parsed.offset : 0,
       seen: Array.isArray(parsed?.seen) ? parsed.seen.filter((key) => typeof key === "string") : [],
+      retries,
     };
   } catch {
-    return { offset: 0, seen: [] };
+    return { offset: 0, seen: [], retries: {} };
   }
 }
 
@@ -280,10 +294,23 @@ export function parseState(raw) {
  * @returns {BotState}
  */
 export function markSeen(state, key, offset, maxSeen = DEFAULT_MAX_SEEN) {
+  const { [key]: _done, ...retries } = state.retries;
   return {
     offset,
     seen: [key, ...state.seen.filter((item) => item !== key)].slice(0, maxSeen),
+    retries,
   };
+}
+
+/**
+ * Count one more failed video upload for a post that will be retried.
+ *
+ * @param {BotState} state
+ * @param {string} key
+ * @returns {BotState}
+ */
+export function markRetry(state, key) {
+  return { ...state, retries: { ...state.retries, [key]: (state.retries[key] ?? 0) + 1 } };
 }
 
 /**

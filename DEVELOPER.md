@@ -27,6 +27,8 @@ The app `telegram2post` is owned by the Reddit account `dadnothere`. `npx devvit
 1. The offset then moves past everything handled, which tells Telegram to drop those updates. Posts over the limit stay unacknowledged and are picked up by the next run.
 1. Each submitted post is logged with its id and URL. If `autoApprove` is on, it is approved right away. A one-off `verify-post` task then runs 60 s later and logs the post's moderation state (`approved`, `removed`, `spam`, `removedByCategory`). If Reddit's spam filter removed the post after that first approval, the task approves it again.
 
+A video upload can fail with `unable to poll media URL ... failed to poll media after 5 polling timestamps`: `media.upload` gives up before Reddit has finished transcoding the video. When that happens the post is held: the run stops, the offset stays on the post, and `state.retries[key]` counts the attempt. After `MAX_VIDEO_ATTEMPTS` (3) failures the post uses the video's Telegram cover image (`posterFileId`), or text only if there is none.
+
 Media is fetched with `getFile`. Its download URL contains the bot token, and that URL is passed to `media.upload`, which downloads the file on Reddit's side. The token is redacted from every error and log line.
 
 ## Bot token

@@ -142,7 +142,7 @@ test("runPollJob posts a text message once and is idempotent on rerun", async ()
   const submitArgs = harness.submitPost.mock.calls[0][0];
   expect(submitArgs).toMatchObject({ subredditName: TARGET_SUBREDDIT, title: "Birra y Politica" });
   expect(submitArgs.text).toBe("Hablemos.\n\n🗓️ 30/10");
-  expect(readState()).toEqual({ offset: 11, seen: ["m:-1001234567890:10"] });
+  expect(readState()).toEqual({ offset: 11, seen: ["m:-1001234567890:10"], retries: {} });
 
   const firstUrl = new URL(String(fetchSpy.mock.calls[0][0]));
   expect(firstUrl.searchParams.get("allowed_updates")).toBe('["channel_post"]');
@@ -396,4 +396,44 @@ test("runPollJob skips while another run holds the lock, and releases its own lo
   harness.submitPost.mockRejectedValueOnce(new Error("reddit down"));
   await expect(runPollJob()).rejects.toThrow("reddit down");
   expect(harness.redisStore.has(`tg:lock:${TARGET_SUBREDDIT}`)).toBe(false);
+});
+
+test("runPollJob holds a post whose video upload fails, then falls back to the cover image", async () => {
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  harness.upload.mockImplementation(async ({ url, type }) => {
+    if (type === "video") {
+      throw new Error("unable to poll media URL");
+    }
+    return { mediaId: "poster", mediaUrl: `https://i.redd.it/${url.split("/").pop()}` };
+  });
+  mockTelegram([
+    channelPost(10, { caption: "Video", video: { file_id: "vid", file_size: 1000, thumbnail: { file_id: "cover" } } }),
+    channelPost(11, { text: "Siguiente" }),
+  ]);
+
+  await runPollJob();
+  await runPollJob();
+  expect(harness.submitPost).not.toHaveBeenCalled();
+  // Offset stays on the held post so Telegram keeps delivering it.
+  expect(readState()).toMatchObject({ offset: 10, retries: { "m:-1001234567890:10": 2 } });
+
+  await runPollJob();
+  expect(harness.submitPost.mock.calls.map((call) => call[0].title)).toEqual(["Video", "Siguiente"]);
+  expect(harness.submitPost.mock.calls[0][0].richtext).toContain("https://i.redd.it/cover.bin");
+  expect(readState()).toEqual({ offset: 12, seen: ["m:-1001234567890:11", "m:-1001234567890:10"], retries: {} });
+});
+
+test("runPollJob posts text when the video and its cover both fail", async () => {
+  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  harness.upload.mockRejectedValue(new Error("unable to poll media URL"));
+  mockTelegram([channelPost(10, { caption: "Video\nDetalles", video: { file_id: "vid" } })]);
+
+  for (let run = 0; run < 3; run += 1) {
+    await runPollJob();
+  }
+
+  expect(harness.submitPost).toHaveBeenCalledTimes(1);
+  expect(harness.submitPost.mock.calls[0][0].text).toBe("Detalles");
 });

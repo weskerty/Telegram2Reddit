@@ -27,6 +27,7 @@ already posted, so nothing is posted twice.
 - The **title** is the first non-empty line of the Telegram post. The **body** is the rest of the post, with its links. The app adds no link back to Telegram, because Reddit's spam filter removes posts with `t.me` links. For the same reason, avoid `t.me` or URL-shortener links in the channel posts themselves.
 - **Albums** become one Reddit post that uses the first photo or video.
 - Media larger than 20 MB (the Bot API download limit) is skipped, and that post goes out as text.
+- If Reddit has not finished processing a **video** when the upload times out, the post is held and retried on the next two checks (about 30 minutes in total). Later channel posts wait behind it so the order is kept. If it still fails, the post uses the video's cover image, or only text if there is none.
 - The app only sees posts made **after** the bot joined the channel. Telegram keeps undelivered posts for 24 hours, so posts made while the app was stopped for more than a day are not delivered.
 - The bot must not have a webhook set: `getUpdates` and webhooks cannot be used together.
 
